@@ -1,15 +1,13 @@
 import sqlite3
-from typing import List
-from flask_wtf import FlaskForm
 from dataclasses import dataclass
-from wtforms.validators import InputRequired
-from wtforms.fields.simple import StringField
+from typing import List, Optional
 
 BOOK_DATA = [
     {'id': 0, 'title': 'A Byte of Python', 'author': 2},
     {'id': 1, 'title': 'Moby-Dick; or, The Whale', 'author': 1},
     {'id': 2, 'title': 'War and Peace', 'author': 3}
 ]
+
 
 AUTHOR_DATA = [
     {'author_id': 0, 'first_name': 'Herman', 'last_name': 'Melville', 'middle_name': ''},
@@ -18,40 +16,29 @@ AUTHOR_DATA = [
 ]
 
 
-class AddBookForm(FlaskForm):
-    title_field = StringField(validators=[InputRequired()])
-    author_first_field = StringField(validators=[InputRequired()])
-    author_last_field = StringField(validators=[InputRequired()])
-    author_middle_field = StringField()
-
-
 @dataclass
 class Book:
-    id: int
     title: str
     author_id: int
-    view_counter: int
+    id: Optional[int] = None
+    view_counter: Optional[int] = 0
 
     def __getitem__(self, item):
         return getattr(self, item)
-
-    def get_author(self):
-        with sqlite3.connect('table_books_3.db') as conn:
-            cursor = conn.cursor()
-            cursor.execute('SELECT * FROM table_authors WHERE author_id = ?', [self.author_id])
-            author_name = cursor.fetchone()
-            return f'{author_name[1]} {author_name[2]} {author_name[3]}'
 
 
 @dataclass
 class Author:
-    author_id: int
     first_name: str
-    last_name: int
-    middle_name: int
+    last_name: str
+    author_id: Optional[int] = None
+    middle_name: Optional[str] = None
 
-    def __getitem__(self, item):
-        return getattr(self, item)
+
+@dataclass
+class AuthorWithBooks:
+    author: Author
+    books: list[Book]
 
 
 def init_db(initial_records_books: List[dict], initial_records_authors: List[dict]) -> None:
@@ -83,7 +70,7 @@ def init_db(initial_records_books: List[dict], initial_records_authors: List[dic
                 "author_id INTEGER, "
                 "view_counter INTEGER, "
                 "FOREIGN KEY (author_id) REFERENCES table_authors(author_id)"
-                "ON UPDATE CASCADE)"
+                    "ON UPDATE CASCADE)"
             )
             cursor.executemany(
                 "INSERT INTO 'table_books' "
@@ -92,63 +79,130 @@ def init_db(initial_records_books: List[dict], initial_records_authors: List[dic
             )
 
 
+def _get_book_obj_from_row(row) -> Book:
+    return Book(id=row[0], title=row[1], author_id=row[2], view_counter=row[3])
+
+
+def _get_author_obj_from_row(row) -> Author:
+    return Author(author_id=row[0], first_name=row[1], last_name=row[2], middle_name=row[3])
+
+
 def get_all_books() -> List[Book]:
     with sqlite3.connect('table_books_3.db') as conn:
         cursor = conn.cursor()
         cursor.execute('SELECT * FROM table_books')
         all_books = cursor.fetchall()
-        return [Book(*row) for row in all_books]
+        return [_get_book_obj_from_row(row) for row in all_books]
 
 
-def input_book(form) -> bool:
+def add_book(book: Book) -> Book:
     try:
         with sqlite3.connect('table_books_3.db') as conn:
-            first_name = form.author_first_field.data
-            last_name = form.author_last_field.data
-            middle_name = form.author_middle_field.data
-
             cursor = conn.cursor()
-            cursor.execute('SELECT * FROM table_authors '
-                           'WHERE first_name = ? '
-                           'AND last_name = ? '
-                           'AND middle_name = ?',
-                           [first_name, last_name, middle_name])
-            result = cursor.fetchone()
-
-            if not result:
-                cursor.execute(
-                    "INSERT INTO 'table_authors' (first_name, last_name, middle_name) VALUES (?, ?, ?)",
-                    [first_name, last_name, middle_name]
-                )
-                author_id = cursor.lastrowid
-            else:
-                author_id = result[0]
-
             cursor.execute(
                 "INSERT INTO 'table_books' (title, author_id, view_counter) VALUES (?, ?, 0)",
-                [form.title_field.data, author_id]
+                (book.title, book.author_id)
             )
-        return True
+            book.id = cursor.lastrowid
+            book.view_counter = 0
+            return book
 
     except sqlite3.Error as e:
         print(f"Database error: {e}")
-        return False
 
 
-def get_book(book_id: int) -> Book:
+def get_book_by_id(book_id: int) -> Optional[Book]:
     with sqlite3.connect('table_books_3.db') as conn:
         cursor = conn.cursor()
-        cursor.execute('SELECT * FROM table_books WHERE id = ?', [book_id])
-        book_data = cursor.fetchone()
-        view_count = book_data[-1]
+        cursor.execute('SELECT * FROM table_books WHERE id = ?', (book_id, ))
+        book = cursor.fetchone()
+        if book:
+            view_count = book[-1]
+            cursor.executescript(
+                f'UPDATE table_books '
+                f'SET "view_counter" = {view_count + 1} '
+                f'WHERE "id" = {book_id};'
+            )
+            return _get_book_obj_from_row(book)
+
+
+def update_book_by_id(book: Book) -> None:
+    with sqlite3.connect('table_books_3.db') as conn:
+        cursor = conn.cursor()
         cursor.execute(
-            f'UPDATE table_books '
-            f'SET "view_counter" = {view_count + 1} '
-            f'WHERE "id" = {book_id};'
+            f"""
+            UPDATE table_books 
+            SET title = ?, 
+                author_id = ? 
+            WHERE id = ?;
+            """, (book.title, book.author_id, book.id)
         )
-        # book_data[-1] += 1
-        return Book(*book_data)
+        conn.commit()
 
 
-if __name__ == '__main__':
-    init_db(BOOK_DATA, AUTHOR_DATA)
+def delete_book_by_id(book_id: int) -> None:
+    with sqlite3.connect('table_books_3.db') as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            f"""
+                    DELETE FROM table_books 
+                    WHERE id = ?;
+                """, (book_id, )
+        )
+        conn.commit()
+
+
+def get_books_by_author_id(author_id: int) -> Optional[List[Book]]:
+    with sqlite3.connect('table_books_3.db') as conn:
+        cursor = conn.cursor()
+        cursor.execute('SELECT * FROM table_books WHERE author_id = ?', (author_id, ))
+        books = cursor.fetchall()
+        if books:
+            return [_get_book_obj_from_row(book) for book in books]
+
+        return None
+
+
+def add_author(author: Author) -> Author:
+    try:
+        with sqlite3.connect('table_books_3.db') as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "INSERT INTO 'table_authors' (first_name, last_name, middle_name) VALUES (?, ?, ?)",
+                (author.first_name, author.last_name, author.middle_name)
+            )
+            author.author_id = cursor.lastrowid
+            return author
+
+    except sqlite3.Error as e:
+        print(f"Database error: {e}")
+
+
+def get_author_by_id(author_id: int) -> Optional[Author]:
+    with sqlite3.connect('table_books_3.db') as conn:
+        cursor = conn.cursor()
+        cursor.execute('SELECT * FROM table_authors WHERE author_id = ?', (author_id, ))
+        author = cursor.fetchone()
+        if author:
+            return _get_author_obj_from_row(author)
+
+        return None
+
+
+def delete_author_and_books_by_author_id(author_id: int) -> None:
+    with sqlite3.connect('table_books_3.db') as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            f"""
+                    DELETE FROM table_books 
+                    WHERE author_id = ?;
+                """, (author_id, )
+        )
+        conn.commit()
+        cursor.execute(
+            f"""
+                    DELETE FROM table_authors 
+                    WHERE author_id = ?;
+                """, (author_id,)
+        )
+        conn.commit()
