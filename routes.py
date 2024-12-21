@@ -3,7 +3,7 @@ from flask import Flask, request
 from marshmallow import ValidationError
 from schemas import BookSchema, AuthorSchema
 from flask_restx import Api, Resource, abort
-from models_2 import (
+from models import (
     Book,
     Author,
     AuthorWithBooks,
